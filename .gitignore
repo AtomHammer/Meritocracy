@@ -6,8 +6,8 @@ __pycache__/
 # OS
 .DS_Store
 
-# Local Claude Code settings (personal permission overrides)
-.claude/settings.local.json
+# Local Claude Code settings + dev tooling config (not for the public repo)
+.claude/
 
 # Saved workbench states (large binary pickles — track separately if needed)
 *.pkl
