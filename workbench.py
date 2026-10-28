@@ -4,6 +4,7 @@ connected by a DAG of operations. The world is shared by every artifact
 in the workbench — that's what makes 'mix two distributions' coherent."""
 from __future__ import annotations
 
+import csv
 import io
 import pickle
 from dataclasses import dataclass, field, replace
@@ -757,3 +758,121 @@ def root_relative_productivity(
     full = np.zeros(root.n)
     full[d.indices_in_root] = d.productivity
     return full, d.root_distribution_name
+
+
+# ---------------------------------------------------------------------------
+# CSV export — hand a population to pandas / R / MATLAB.
+# ---------------------------------------------------------------------------
+
+
+def _safe_col(name: str) -> str:
+    """Quality name -> a column header that's convenient in R/pandas (no spaces
+    or separators). Falls back to 'q' if a name reduces to nothing."""
+    cleaned = "".join(ch if (ch.isalnum() or ch in "._") else "_"
+                      for ch in name.strip())
+    return cleaned or "q"
+
+
+def _fmt(x) -> str:
+    """Format one value for CSV: blank for NaN, else a compact number."""
+    xf = float(x)
+    if np.isnan(xf):
+        return ""
+    return repr(round(xf, 6))
+
+
+def export_distribution_csv(wb: Workbench, dist_name: str) -> str:
+    """Export a population as CSV text (one row per scientist) for external
+    analysis in pandas / R / MATLAB.
+
+    Two shapes, by origin:
+
+    * **Filter result** — one row per scientist in the *parent* pool that faced
+      the filter: their TRUE traits plus what happened to them — `applied`,
+      `survived`, and the reviewer-`obs_*` scores they received (blank for
+      non-applicants). This is the traits -> outcome table for the applicant
+      ("fairness") lens: e.g. P(survived | trait cell) is a one-line groupby.
+    * **Fresh draw / mix** — one row per scientist, TRUE traits only (there is
+      no filter event to report).
+
+    `true_*` columns are the hidden ground truth the simulator knows and real
+    data never does; `obs_*` are 1..max_score reviewer averages. `root_id`
+    (when present — single-root chains only) is a stable per-scientist id for
+    joining across stages.
+    """
+    d = wb.distributions.get(dist_name)
+    if d is None:
+        raise ValueError(f"No distribution named '{dist_name}'.")
+    q_names = [_safe_col(c.name) for c in wb.world.quality_configs]
+    Nq = len(q_names)
+
+    fa = d.filter_artifacts
+    is_filter = fa is not None and isinstance(d.origin, ApplyFilterOrigin)
+    parent = (wb.distributions.get(d.origin.input_distribution_name)
+              if is_filter else None)
+
+    if is_filter and parent is not None:
+        src = parent                       # rows = everyone who faced the filter
+        n = src.n
+        applied = fa.applied_mask.astype(bool)
+        survived = fa.survived_mask.astype(bool)
+        obs_q = np.full((n, Nq), np.nan)
+        if fa.per_quality_observed is not None:
+            obs_q[applied] = fa.per_quality_observed
+        obs_prod = np.full(n, np.nan)
+        if fa.productivity_observed is not None:
+            obs_prod[applied] = fa.productivity_observed
+        include_obs_prod = not np.all(np.isnan(obs_prod))
+        # Composite = the single weighted score that decided survival
+        # (observed_scores is final_scores, same applicant order as the
+        # per-quality obs). cutoff_score is the pass/fail line.
+        obs_comp = np.full(n, np.nan)
+        obs_comp[applied] = fa.observed_scores
+        cutoff_val = fa.cutoff_score
+    else:
+        src = d                            # rows = the population itself
+        n = src.n
+        applied = survived = obs_q = obs_prod = obs_comp = None
+        cutoff_val = None
+        include_obs_prod = False
+        is_filter = False                  # treat Mix/FreshDraw as snapshot
+
+    header: list[str] = []
+    if src.indices_in_root is not None:
+        header.append("root_id")
+    if src.path_label is not None:
+        header.append("path")
+    header += [f"true_{q}" for q in q_names]
+    header += ["true_potential", "productivity_in", "opportunity_in",
+               "self_assessment_accuracy"]
+    if is_filter:
+        header += ["applied", "survived"]
+        header += [f"obs_{q}" for q in q_names]
+        if include_obs_prod:
+            header.append("obs_productivity")
+        header += ["obs_composite", "cutoff_score"]
+
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(header)
+
+    root_ids = src.indices_in_root
+    paths = src.path_label
+    for i in range(n):
+        row: list = []
+        if root_ids is not None:
+            row.append(int(root_ids[i]))
+        if paths is not None:
+            row.append(str(paths[i]))
+        row += [_fmt(src.qualities[i, q]) for q in range(Nq)]
+        row += [_fmt(src.potential[i]), _fmt(src.productivity[i]),
+                _fmt(src.opportunity[i]), _fmt(src.self_assessment_accuracies[i])]
+        if is_filter:
+            row += [int(applied[i]), int(survived[i])]
+            row += [_fmt(obs_q[i, q]) for q in range(Nq)]
+            if include_obs_prod:
+                row.append(_fmt(obs_prod[i]))
+            row.append(_fmt(obs_comp[i]))
+            row.append(_fmt(cutoff_val))
+        w.writerow(row)
+    return buf.getvalue()

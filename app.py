@@ -24,6 +24,7 @@ from workbench import (
     MixOrigin,
     Workbench,
     apply_filter,
+    export_distribution_csv,
     fresh_draw,
     import_workbench_into,
     lineage_text,
@@ -1366,6 +1367,34 @@ with tab_explorer:
         cols[2].metric("σ Potential", f"{d.potential.std():.3f}")
         cols[3].metric("Mean Productivity", f"{d.productivity.mean():.3f}")
         cols[4].metric("Mean Opportunity", f"{d.opportunity.mean():.3f}")
+
+        with st.expander("⬇ Export this population (CSV)", expanded=False):
+            st.caption(
+                "One row per scientist, for digging in with pandas / R / MATLAB. "
+                "**Filter result:** every parent-pool scientist — their *true* "
+                "traits, whether they `applied` / `survived`, and their observed "
+                "1–5 scores (blank if they didn't apply). That's the "
+                "traits→outcome table, so \"chances for people like me\" is a "
+                "one-line group-by. **Fresh draw / mix:** the population's true "
+                "traits. `true_*` columns are the hidden ground truth; `obs_*` "
+                "are reviewer averages; `root_id` (single-root chains) joins "
+                "across stages."
+            )
+            gen_key = f"csv_text::{d.name}::{d.n}"
+            if st.button("Prepare CSV", key=f"prep_csv_{d.name}"):
+                with st.spinner("Building CSV…"):
+                    st.session_state[gen_key] = export_distribution_csv(wb, d.name)
+            csv_text = st.session_state.get(gen_key)
+            if csv_text:
+                safe_file = "".join(
+                    c if (c.isalnum() or c in "-_.") else "_" for c in d.name
+                ) or "population"
+                st.download_button(
+                    "Download CSV", data=csv_text,
+                    file_name=f"{safe_file}.csv", mime="text/csv",
+                    key=f"dl_csv_{d.name}",
+                )
+                st.caption(f"{max(csv_text.count(chr(10)) - 1, 0):,} rows ready.")
 
         with st.expander("Lineage", expanded=True):
             st.code(lineage_text(wb, d.name))
