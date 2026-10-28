@@ -544,29 +544,30 @@ def hist_filter_mistakes(d, parent_dist, x_range=None, color_by_path=False,
                 ax.hist(true_potential_before[fp_from_reviewer], bins=bins,
                         alpha=0.65, color="crimson",
                         label=f"FP from reviewer (n={int(fp_from_reviewer.sum())})")
-    # FN side: stacked or overlapped — SS losses + reviewer rejections of deserving.
-    # Skipped when use_path is on (we already drew per-path FN overlays).
-    if not use_path and (fn_from_ss.any() or fn_from_reviewer.any()):
-        if stacked:
-            ax.hist(
-                [true_potential_before[fn_from_ss],
-                 true_potential_before[fn_from_reviewer]],
-                bins=bins, stacked=True,
-                color=["lightsteelblue", "royalblue"],
-                label=[
-                    f"FN from SS — didn't apply (n={int(fn_from_ss.sum())})",
-                    f"FN from reviewer — rejected (n={int(fn_from_reviewer.sum())})",
-                ],
-            )
-        else:
-            if fn_from_ss.any():
-                ax.hist(true_potential_before[fn_from_ss], bins=bins,
-                        alpha=0.55, color="lightsteelblue",
-                        label=f"FN from SS — didn't apply (n={int(fn_from_ss.sum())})")
-            if fn_from_reviewer.any():
-                ax.hist(true_potential_before[fn_from_reviewer], bins=bins,
-                        alpha=0.65, color="royalblue",
-                        label=f"FN from reviewer — rejected (n={int(fn_from_reviewer.sum())})")
+    # FN side: SS losses + reviewer rejections of deserving. Each sub-series
+    # is included only when it actually has members, so a filter with no
+    # self-selection (fn_from_ss is always empty) shows no dead "FN from SS"
+    # legend entry. Skipped when use_path is on (per-path FN overlays already
+    # drawn above).
+    if not use_path:
+        fn_series = []  # (values, color, alpha, label)
+        if fn_from_ss.any():
+            fn_series.append(
+                (true_potential_before[fn_from_ss], "lightsteelblue", 0.55,
+                 f"FN from SS — didn't apply (n={int(fn_from_ss.sum())})"))
+        if fn_from_reviewer.any():
+            fn_series.append(
+                (true_potential_before[fn_from_reviewer], "royalblue", 0.65,
+                 f"FN from reviewer — rejected (n={int(fn_from_reviewer.sum())})"))
+        if fn_series:
+            if stacked:
+                ax.hist([s[0] for s in fn_series], bins=bins, stacked=True,
+                        color=[s[1] for s in fn_series],
+                        label=[s[3] for s in fn_series])
+            else:
+                for values, color, alpha, label in fn_series:
+                    ax.hist(values, bins=bins, alpha=alpha, color=color,
+                            label=label)
 
     # Cutoff lines
     ax.axvline(parent_ideal_cutoff, color="black", linestyle="--", linewidth=2,
