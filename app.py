@@ -368,20 +368,32 @@ def scatter_per_quality(d, parent_dist, q_idx: int, q_name: str,
 
 def scatter_productivity(d, parent_dist, color_by_path: bool = False):
     """Scatter of (true productivity, reviewer-averaged 1-5 productivity score)
-    for applicants. Quartile lines, no cutoffs."""
+    for applicants with a track record. Quartile lines, no cutoffs.
+
+    Applicants with no opportunity (opportunity == 0) are left out: they have
+    no record to review, and productivity is not part of their score."""
     fa = d.filter_artifacts
     if fa is None or parent_dist is None or fa.productivity_observed is None:
         return None
-    applied_idx = np.where(fa.applied_mask)[0]
+    has_record_among_applied = parent_dist.opportunity[fa.applied_mask] > 0
+    n_no_record = int((~has_record_among_applied).sum())
+    plot_mask = fa.applied_mask & (parent_dist.opportunity > 0)
+    applied_idx = np.where(plot_mask)[0]
     if applied_idx.size == 0:
         return None
-    true_prod = parent_dist.productivity[fa.applied_mask]
-    obs_prod = fa.productivity_observed
-    survived_among_applied = fa.survived_mask[fa.applied_mask]
+    true_prod = parent_dist.productivity[plot_mask]
+    obs_prod = fa.productivity_observed[has_record_among_applied]
+    survived_among_applied = fa.survived_mask[plot_mask]
 
     fig, ax = plt.subplots(figsize=(7, 5))
-    layers = _color_args(parent_dist, fa.applied_mask, survived_among_applied,
+    layers = _color_args(parent_dist, plot_mask, survived_among_applied,
                           color_by_path)
+    if n_no_record > 0:
+        ax.text(0.98, 0.02,
+                f"{n_no_record:,} applicants with no track record not shown",
+                transform=ax.transAxes, fontsize=7, ha="right", va="bottom",
+                color="dimgray",
+                bbox=dict(facecolor="white", edgecolor="none", alpha=0.7))
     max_points = 25000
     if applied_idx.size > max_points:
         step = applied_idx.size // max_points
