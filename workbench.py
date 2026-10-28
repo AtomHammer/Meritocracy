@@ -781,98 +781,96 @@ def _fmt(x) -> str:
     return repr(round(xf, 6))
 
 
-def export_distribution_csv(wb: Workbench, dist_name: str) -> str:
-    """Export a population as CSV text (one row per scientist) for external
-    analysis in pandas / R / MATLAB.
+def population_channels(wb: Workbench, dist_name: str) -> dict[str, np.ndarray]:
+    """Every per-scientist measurement for a population, as named columns
+    (one array per column, all the same length, in display order). This is
+    the shared source for the CSV export and the gating view's axes.
 
     Two shapes, by origin:
 
     * **Filter result** — one row per scientist in the *parent* pool that faced
       the filter: their TRUE traits plus what happened to them — `applied`,
-      `survived`, and the reviewer-`obs_*` scores they received (blank for
+      `survived` (bool), and the reviewer `obs_*` scores they received (NaN for
       non-applicants). This is the traits -> outcome table for the applicant
-      ("fairness") lens: e.g. P(survived | trait cell) is a one-line groupby.
+      ("fairness") lens.
     * **Fresh draw / mix** — one row per scientist, TRUE traits only (there is
       no filter event to report).
 
     `true_*` columns are the hidden ground truth the simulator knows and real
     data never does; `obs_*` are 1..max_score reviewer averages. `root_id`
     (when present — single-root chains only) is a stable per-scientist id for
-    joining across stages.
+    joining across stages. `path` is a string column; `root_id` is integer.
     """
     d = wb.distributions.get(dist_name)
     if d is None:
         raise ValueError(f"No distribution named '{dist_name}'.")
     q_names = [_safe_col(c.name) for c in wb.world.quality_configs]
-    Nq = len(q_names)
 
     fa = d.filter_artifacts
     is_filter = fa is not None and isinstance(d.origin, ApplyFilterOrigin)
     parent = (wb.distributions.get(d.origin.input_distribution_name)
               if is_filter else None)
+    if parent is None:
+        is_filter = False                  # treat Mix/FreshDraw as snapshot
+    src = parent if is_filter else d       # filter: rows = everyone who faced it
+    n = src.n
 
-    if is_filter and parent is not None:
-        src = parent                       # rows = everyone who faced the filter
-        n = src.n
+    cols: dict[str, np.ndarray] = {}
+    if src.indices_in_root is not None:
+        cols["root_id"] = np.asarray(src.indices_in_root, dtype=int)
+    if src.path_label is not None:
+        cols["path"] = np.asarray(src.path_label, dtype=str)
+    for qi, q in enumerate(q_names):
+        cols[f"true_{q}"] = src.qualities[:, qi]
+    cols["true_potential"] = src.potential
+    cols["productivity_in"] = src.productivity
+    cols["opportunity_in"] = src.opportunity
+    cols["self_assessment_accuracy"] = src.self_assessment_accuracies
+
+    if is_filter:
         applied = fa.applied_mask.astype(bool)
-        survived = fa.survived_mask.astype(bool)
-        obs_q = np.full((n, Nq), np.nan)
+        cols["applied"] = applied
+        cols["survived"] = fa.survived_mask.astype(bool)
+        obs_q = np.full((n, len(q_names)), np.nan)
         if fa.per_quality_observed is not None:
             obs_q[applied] = fa.per_quality_observed
+        for qi, q in enumerate(q_names):
+            cols[f"obs_{q}"] = obs_q[:, qi]
         obs_prod = np.full(n, np.nan)
         if fa.productivity_observed is not None:
             obs_prod[applied] = fa.productivity_observed
-        include_obs_prod = not np.all(np.isnan(obs_prod))
+        if not np.all(np.isnan(obs_prod)):
+            cols["obs_productivity"] = obs_prod
         # Composite = the single weighted score that decided survival
         # (observed_scores is final_scores, same applicant order as the
         # per-quality obs). cutoff_score is the pass/fail line.
         obs_comp = np.full(n, np.nan)
         obs_comp[applied] = fa.observed_scores
-        cutoff_val = fa.cutoff_score
-    else:
-        src = d                            # rows = the population itself
-        n = src.n
-        applied = survived = obs_q = obs_prod = obs_comp = None
-        cutoff_val = None
-        include_obs_prod = False
-        is_filter = False                  # treat Mix/FreshDraw as snapshot
+        cols["obs_composite"] = obs_comp
+        cols["cutoff_score"] = np.full(n, float(fa.cutoff_score))
+    return cols
 
-    header: list[str] = []
-    if src.indices_in_root is not None:
-        header.append("root_id")
-    if src.path_label is not None:
-        header.append("path")
-    header += [f"true_{q}" for q in q_names]
-    header += ["true_potential", "productivity_in", "opportunity_in",
-               "self_assessment_accuracy"]
-    if is_filter:
-        header += ["applied", "survived"]
-        header += [f"obs_{q}" for q in q_names]
-        if include_obs_prod:
-            header.append("obs_productivity")
-        header += ["obs_composite", "cutoff_score"]
+
+def export_distribution_csv(wb: Workbench, dist_name: str) -> str:
+    """Export a population as CSV text (one row per scientist) for external
+    analysis in pandas / R / MATLAB. Columns come from `population_channels`;
+    NaN is written as a blank cell and booleans as 0/1."""
+    cols = population_channels(wb, dist_name)
+    header = list(cols)
+    formatters = []
+    for arr in cols.values():
+        if arr.dtype == bool or np.issubdtype(arr.dtype, np.integer):
+            formatters.append(int)
+        elif arr.dtype.kind in "US":
+            formatters.append(str)
+        else:
+            formatters.append(_fmt)
+    arrays = list(cols.values())
+    n = len(arrays[0]) if arrays else 0
 
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(header)
-
-    root_ids = src.indices_in_root
-    paths = src.path_label
     for i in range(n):
-        row: list = []
-        if root_ids is not None:
-            row.append(int(root_ids[i]))
-        if paths is not None:
-            row.append(str(paths[i]))
-        row += [_fmt(src.qualities[i, q]) for q in range(Nq)]
-        row += [_fmt(src.potential[i]), _fmt(src.productivity[i]),
-                _fmt(src.opportunity[i]), _fmt(src.self_assessment_accuracies[i])]
-        if is_filter:
-            row += [int(applied[i]), int(survived[i])]
-            row += [_fmt(obs_q[i, q]) for q in range(Nq)]
-            if include_obs_prod:
-                row.append(_fmt(obs_prod[i]))
-            row.append(_fmt(obs_comp[i]))
-            row.append(_fmt(cutoff_val))
-        w.writerow(row)
+        w.writerow([f(a[i]) for f, a in zip(formatters, arrays)])
     return buf.getvalue()
