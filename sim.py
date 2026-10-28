@@ -906,19 +906,32 @@ def run_application(
                 score_1to5_prod[s_idx, r_idx] = neutral_exact
 
     # ---- Step 3: weighted average per (scientist, read), then mean across reads ----
+    # Productivity counts toward a scientist's score only when it was actually
+    # assessable — i.e. they had prior opportunity. For a no-track-record
+    # applicant (opportunity = 0) the productivity dimension is dropped from
+    # BOTH the numerator and the denominator, so the dimensions reviewers *can*
+    # judge carry full weight (a per-scientist denominator). Previously every
+    # applicant shared one constant denominator and opp=0 applicants had a
+    # neutral productivity score (pile_mean) folded in, which anchored their
+    # composite toward that constant and pulled it toward the mean; dropping the
+    # term removes that pull. Pools where everyone has opportunity are
+    # unaffected (the denominator is constant there, as before).
     weights = np.array(base_weights, dtype=float)
-    total_weight = float(weights.sum())
+    quality_weight_sum = float(weights.sum())
     if productivity_active:
-        total_weight += float(prod_w)
-        if total_weight <= 0:
-            total_weight = 1.0  # avoid div by zero; falls back to all-zero scores
+        prod_assessed = (applied_opportunity > 0).astype(float)  # (n_applied,)
+        denom = quality_weight_sum + float(prod_w) * prod_assessed
+    else:
+        denom = np.full(n_applied, quality_weight_sum, dtype=float)
+    denom = np.where(denom <= 0.0, 1.0, denom)  # avoid div by zero
 
     per_reviewer_scores = np.zeros((n_applied, app_config.reads))
     for r in range(app_config.reads):
         weighted_q_sum = (score_1to5[:, r, :] * weights[None, :]).sum(axis=1)
         if productivity_active:
-            weighted_q_sum += prod_w * score_1to5_prod[:, r]
-        per_reviewer_scores[:, r] = weighted_q_sum / total_weight
+            weighted_q_sum = (weighted_q_sum
+                              + prod_w * score_1to5_prod[:, r] * prod_assessed)
+        per_reviewer_scores[:, r] = weighted_q_sum / denom
 
     final_scores = per_reviewer_scores.mean(axis=1)
 
